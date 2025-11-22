@@ -1,0 +1,27 @@
+# Python Basics
+__pycache__/
+*.py[cod]
+*$py.class
+# Virtual Environments
+venv/
+env/
+.venv/
+.env/
+
+# Build files
+*.spec
+dist/
+build/
+
+# Datasets and test images
+*.jpg
+*.png
+*.jpeg
+dataset/
+data/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
