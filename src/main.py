@@ -44,8 +44,10 @@ class VideoThread(QThread):
         self._run_flag = True
         self.model = None
         self.face_cascade = None
+        self.eye_cascade = None
         self.IMG_SIZE = 145
-        self.labels = ["Yawn", "No_yawn", "Closed", "Open"]
+        self.eyes_closed_frames = 0
+        self.EYES_CLOSED_THRESHOLD = 3
         
     def load_resources(self):
         """Carga el modelo y el clasificador de rostros"""
@@ -65,10 +67,21 @@ class VideoThread(QThread):
                 face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             
             self.face_cascade = cv2.CascadeClassifier(face_cascade_path)
-            print("✓ HaarCascade cargado exitosamente")
+            print("✓ HaarCascade para rostros cargado exitosamente")
+            
+            # Cargar HaarCascade para detección de ojos
+            eye_cascade_path = os.path.join(cv2_base_dir, "data/haarcascade_eye.xml")
+            if not os.path.exists(eye_cascade_path):
+                eye_cascade_path = cv2.data.haarcascades + 'haarcascade_eye.xml'
+            
+            self.eye_cascade = cv2.CascadeClassifier(eye_cascade_path)
+            print("✓ HaarCascade para ojos cargado exitosamente")
             
             if self.face_cascade.empty():
-                raise Exception("No se pudo cargar el clasificador HaarCascade")
+                raise Exception("No se pudo cargar el clasificador HaarCascade de rostros")
+            
+            if self.eye_cascade.empty():
+                raise Exception("No se pudo cargar el clasificador HaarCascade de ojos")
                 
             return True
             
@@ -77,46 +90,39 @@ class VideoThread(QThread):
             self.status_signal.emit(f"Error: {str(e)}", "red")
             return False
     
-    def prepare_face(self, image, face_coords):
-        """
-        Prepara la región del rostro para la inferencia.
-        Aplica la misma lógica que en el notebook: resize y normalización.
-        """
+    def prepare_face(self, image_bgr, face_coords):
         try:
             x, y, w, h = face_coords
-            roi = image[y:y+h, x:x+w]
-            
-            # Resize a 145x145 (como en el notebook)
-            resized = cv2.resize(roi, (self.IMG_SIZE, self.IMG_SIZE))
-            
-            # Normalización (dividir por 255)
-            normalized = resized / 255.0
-            
-            # Reshape para el modelo: (1, 145, 145, 3)
+            roi_bgr = image_bgr[y:y+h, x:x+w]
+            roi_rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(roi_rgb, (self.IMG_SIZE, self.IMG_SIZE))
+            normalized = resized.astype(np.float32) / 255.0
             return normalized.reshape(-1, self.IMG_SIZE, self.IMG_SIZE, 3)
-            
         except Exception as e:
             print(f"Error en prepare_face: {e}")
             return None
     
-    def get_status_and_color(self, prediction_idx):
-        """
-        Determina el estado y color según la predicción.
-        0: Yawn (Bostezo) - Amarillo/Naranja (Advertencia)
-        1: No_yawn (Sin bostezo) - Verde (Normal)
-        2: Closed (Ojos cerrados) - Rojo (Alerta)
-        3: Open (Ojos abiertos) - Verde (Normal)
-        """
-        if prediction_idx == 0:  # Yawn
+    def detect_eyes(self, face_gray, face_coords):
+        try:
+            x, y, w, h = face_coords
+            roi_gray = face_gray[y:y+h, x:x+w]
+            eyes = self.eye_cascade.detectMultiScale(
+                roi_gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(20, 20)
+            )
+            return len(eyes) >= 1
+        except Exception as e:
+            print(f"Error en detect_eyes: {e}")
+            return True
+    
+    def get_status_and_color(self, is_yawning, eyes_are_closed):
+        if eyes_are_closed:
+            return "🚨 ALERTA CRÍTICA: Ojos Cerrados", "#FF0000"
+        if is_yawning:
             return "⚠️ ADVERTENCIA: Bostezo Detectado", "#FFA500"
-        elif prediction_idx == 1:  # No_yawn
-            return "✓ Normal: Sin Bostezo", "#00FF00"
-        elif prediction_idx == 2:  # Closed (ojos cerrados)
-            return "🚨 ALERTA: Ojos Cerrados", "#FF0000"
-        elif prediction_idx == 3:  # Open
-            return "✓ Normal: Ojos Abiertos", "#00FF00"
-        else:
-            return "Desconocido", "#FFFFFF"
+        return "✓ Estado Normal: Atento", "#00FF00"
     
     def run(self):
         """Loop principal del thread de video"""
@@ -142,8 +148,7 @@ class VideoThread(QThread):
                 print("✗ Error al capturar frame")
                 continue
             
-            # Convertir a RGB para procesamiento
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Convertir a escala de grises para detección de rostros/ojos
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
             # Detectar rostros
@@ -158,34 +163,62 @@ class VideoThread(QThread):
                 # Tomar el primer rostro detectado
                 (x, y, w, h) = faces[0]
                 
-                # Dibujar rectángulo en el rostro
-                cv2.rectangle(rgb_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
                 
-                # Preparar imagen para predicción
-                prepared_face = self.prepare_face(rgb_frame, (x, y, w, h))
+                eyes_detected = self.detect_eyes(gray_frame, (x, y, w, h))
+                
+                if not eyes_detected:
+                    self.eyes_closed_frames += 1
+                else:
+                    self.eyes_closed_frames = 0
+                
+                eyes_are_closed = self.eyes_closed_frames >= self.EYES_CLOSED_THRESHOLD
+                
+                prepared_face = self.prepare_face(frame, (x, y, w, h))
                 
                 if prepared_face is not None:
-                    # Realizar predicción
                     predictions = self.model.predict(prepared_face, verbose=0)
-                    prediction_idx = np.argmax(predictions[0])
-                    confidence = predictions[0][prediction_idx]
                     
-                    # Obtener estado y color
-                    status, color = self.get_status_and_color(prediction_idx)
-                    status_with_conf = f"{status} ({confidence*100:.1f}%)"
+                    yawn_prob = predictions[0][1]
+                    no_yawn_prob = predictions[0][0]
                     
-                    # Emitir señal de estado
-                    self.status_signal.emit(status_with_conf, color)
+                    is_yawning = yawn_prob > no_yawn_prob
                     
-                    # Agregar texto en el frame
-                    label = f"{self.labels[prediction_idx]} ({confidence*100:.0f}%)"
-                    cv2.putText(rgb_frame, label, (x, y-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                    # print(f"\n{'='*40}")
+                    # print(f"🔍 ANÁLISIS:")
+                    # print(f"   yawn    : {yawn_prob*100:5.1f}% {'👉' if is_yawning else '  '}")
+                    # print(f"   no_yawn : {no_yawn_prob*100:5.1f}% {'👉' if not is_yawning else '  '}")
+                    # print(f"   Ojos: {'🟢 SÍ' if eyes_detected else '🔴 NO'} | Frames: {self.eyes_closed_frames}/{self.EYES_CLOSED_THRESHOLD}")
+                    # print(f"{'='*40}\n")
+                    
+                    status, color = self.get_status_and_color(is_yawning, eyes_are_closed)
+                    self.status_signal.emit(status, color)
+                    
+                    yawn_label = f"Bostezo: {yawn_prob*100:.0f}%" if is_yawning else f"Normal: {no_yawn_prob*100:.0f}%"
+                    yawn_color = (255, 165, 0) if is_yawning else (0, 255, 0)
+                    cv2.putText(frame, yawn_label, (x, y-30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, yawn_color, 2)
+                    
+                    if eyes_are_closed:
+                        eyes_label = "Ojos: CERRADOS!"
+                        eyes_color = (255, 0, 0)
+                    elif not eyes_detected:
+                        eyes_label = f"Ojos: No detectados ({self.eyes_closed_frames})"
+                        eyes_color = (255, 255, 0)
+                    else:
+                        eyes_label = "Ojos: Abiertos"
+                        eyes_color = (0, 255, 0)
+                    
+                    cv2.putText(frame, eyes_label, (x, y-10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, eyes_color, 2)
             else:
                 # No se detectó rostro
                 self.status_signal.emit("⌛ Buscando rostro...", "yellow")
-                cv2.putText(rgb_frame, "No face detected", (10, 30),
+                cv2.putText(frame, "No face detected", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+            # Convertir BGR a RGB para PyQt6
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             # Emitir frame procesado
             self.change_pixmap_signal.emit(rgb_frame)
