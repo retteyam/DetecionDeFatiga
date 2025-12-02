@@ -53,7 +53,7 @@ class VideoThread(QThread):
         self.CLOSED_THRESHOLD = 0.65    # No se usa (HaarCascade en su lugar)
         
         # Configuración para detección de ojos con HaarCascade
-        self.EYES_CLOSED_THRESHOLD = 5   # Frames consecutivos sin ojos para alertar
+        self.EYES_CLOSED_THRESHOLD = 3   # Frames consecutivos sin ojos para alertar (ajustado de 5 a 3)
         
     def load_resources(self):
         """Carga el modelo y el clasificador de rostros"""
@@ -114,9 +114,9 @@ class VideoThread(QThread):
             roi_gray = face_gray[y:y+h, x:x+w]
             eyes = self.eye_cascade.detectMultiScale(
                 roi_gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(20, 20)
+                scaleFactor=1.05,   # Reducido de 1.1 a 1.05 para más precisión
+                minNeighbors=3,      # Reducido de 5 a 3 para ser más sensible
+                minSize=(15, 15)     # Reducido de (20,20) a (15,15) para detectar ojos más pequeños
             )
             return len(eyes) >= 1
         except Exception as e:
@@ -210,12 +210,12 @@ class VideoThread(QThread):
                     closed_prob = predictions[0][2]    # Nuevo: índice 2 = Closed
                     open_prob = predictions[0][3]      # Nuevo: índice 3 = Open
                     
-                    # DEBUG: Ver las predicciones en consola
-                    print(f"\n🔍 Predicciones del modelo:")
-                    print(f"  [0] yawn    : {yawn_prob*100:5.1f}%")
-                    print(f"  [1] no_yawn : {no_yawn_prob*100:5.1f}%")
-                    print(f"  [2] Closed  : {closed_prob*100:5.1f}%")
-                    print(f"  [3] Open    : {open_prob*100:5.1f}%")
+                    # # DEBUG: Ver las predicciones en consola
+                    # print(f"\n🔍 Predicciones del modelo:")
+                    # print(f"  [0] yawn    : {yawn_prob*100:5.1f}%")
+                    # print(f"  [1] no_yawn : {no_yawn_prob*100:5.1f}%")
+                    # print(f"  [2] Closed  : {closed_prob*100:5.1f}%")
+                    # print(f"  [3] Open    : {open_prob*100:5.1f}%")
                     
                     # ESTRATEGIA HÍBRIDA: Usar yawn/no_yawn del modelo + HaarCascade para ojos
                     # El modelo fue entrenado con rostros completos para yawn/no_yawn
@@ -235,8 +235,8 @@ class VideoThread(QThread):
                     
                     eyes_are_closed = self.eyes_closed_frames >= self.EYES_CLOSED_THRESHOLD
                     
-                    print(f"  → is_yawning: {is_yawning} (threshold: {self.YAWN_THRESHOLD})")
-                    print(f"  → eyes_closed: {eyes_are_closed} (HaarCascade frames: {self.eyes_closed_frames}/{self.EYES_CLOSED_THRESHOLD})")
+                    # print(f"  → is_yawning: {is_yawning} (threshold: {self.YAWN_THRESHOLD})")
+                    # print(f"  → eyes_closed: {eyes_are_closed} (HaarCascade frames: {self.eyes_closed_frames}/{self.EYES_CLOSED_THRESHOLD})")
                     
                     # Obtener estado y color basado en las predicciones del modelo
                     status, color = self.get_status_and_color(is_yawning, eyes_are_closed, closed_prob, yawn_prob)
@@ -249,16 +249,16 @@ class VideoThread(QThread):
                     cv2.putText(frame, yawn_label, (x, y-30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, yawn_color, 2)
                     
-                    # Mostrar información de estado de ojos (usando HaarCascade)
-                    if eyes_are_closed:
-                        eyes_label = f"Ojos: CERRADOS! (Frames: {self.eyes_closed_frames})"
-                        eyes_color = (255, 0, 0)  # Rojo
-                    else:
-                        eyes_label = f"Ojos: Abiertos (detectados: {eyes_detected_now})"
-                        eyes_color = (0, 255, 0)  # Verde
+                    # # Mostrar información de estado de ojos (usando HaarCascade)
+                    # if eyes_are_closed:
+                    #     eyes_label = f"Ojos: CERRADOS! (Frames: {self.eyes_closed_frames})"
+                    #     eyes_color = (255, 0, 0)  # Rojo
+                    # else:
+                    #     eyes_label = f"Ojos: Abiertos (detectados: {eyes_detected_now})"
+                    #     eyes_color = (0, 255, 0)  # Verde
                     
-                    cv2.putText(frame, eyes_label, (x, y-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, eyes_color, 2)
+                    # cv2.putText(frame, eyes_label, (x, y-10), 
+                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, eyes_color, 2)
             else:
                 # No se detectó rostro
                 self.status_signal.emit("⌛ Buscando rostro...", "yellow")
